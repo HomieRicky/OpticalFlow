@@ -111,6 +111,7 @@ public class OpticalFlowDemo extends JFrame {
                 }
             }
             outFile.write(bb.array());
+            System.runFinalization();
         } catch (IOException e) {
             e.printStackTrace();
         }

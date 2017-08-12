@@ -9,6 +9,8 @@ import java.awt.event.MouseEvent;
 import java.awt.image.BufferedImage;
 import java.awt.image.DataBufferByte;
 import java.awt.image.WritableRaster;
+import java.io.*;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.*;
@@ -21,21 +23,25 @@ public class OpticalFlowDemo extends JFrame {
     static volatile Mat editedFrameToUse;
     static boolean first = true;
     static VideoCapture vc;
-    static final int WINDOW_SIZE = 10;
+    static final byte WINDOW_SIZE = 10;
     static final int PARALELLISM = 50;
     static long time = System.currentTimeMillis();
+    static String filename = new String();
+    static FileOutputStream fw;
 
 
-    public static void main(String args[]) {
+    public static void main(String args[]) throws FileNotFoundException {
         System.loadLibrary(Core.NATIVE_LIBRARY_NAME);
         vc = new VideoCapture();
         getInputs(args);
+        filename += "-data.dat";
         Mat frame = new Mat();
         Mat m;
         Mat oldMat = new Mat();
         Mat flowDisplay;
         VideoWriter vw = new VideoWriter();
         int count = 1;
+        fw = new FileOutputStream(filename);
 
         while(vc.isOpened()) {
             vc.read(frame);
@@ -55,8 +61,9 @@ public class OpticalFlowDemo extends JFrame {
                     m.convertTo(m, CvType.CV_8UC1);
 
                     //get conversions
-                    int flowBytes[][][] = new int[m.cols()][m.rows()][3];
+                    int flowBytes[][][] = new int[m.rows()/WINDOW_SIZE][m.cols()/WINDOW_SIZE][3];
                     calcOpticalFlow(m, oldMat, m.cols()/WINDOW_SIZE, m.rows()/WINDOW_SIZE, flowBytes);
+                    writeData(FrameHeaders.ONLY_APPLY_MOVEMENTS, flowBytes, fw, 0);
 
                     oldMat = m.clone();
 
@@ -77,10 +84,36 @@ public class OpticalFlowDemo extends JFrame {
                 }
             } else {
                 vw.release();
+                try {
+                    fw.close();
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
                 break;
             }
         }
         vc.release();
+    }
+
+    public static void writeData(FrameHeaders header, int[][][] flowBytes, FileOutputStream outFile, int translationFrames) {
+        try {
+            outFile.write(new byte[]{header.getHeader()});
+            if(header == FrameHeaders.SKIP) return;
+            int allocation = flowBytes.length * flowBytes[0].length * 6; //main data part
+            allocation += 8; //width and height header
+            if(header == FrameHeaders.APPLY_MOVEMENT_TRANSLATE_MOVEMENT) allocation += 2;   //translation header
+            ByteBuffer bb = ByteBuffer.allocate(allocation);
+            if(header == FrameHeaders.APPLY_MOVEMENT_TRANSLATE_MOVEMENT) bb.putInt(translationFrames);
+            bb.putInt(flowBytes.length).putInt(flowBytes[0].length);
+            for(int i = 0; i < flowBytes.length; i++) {
+                for(int j = 0; j < flowBytes[i].length; j++) {
+                    bb.put((byte) flowBytes[i][j][0]).put((byte) flowBytes[i][j][1]).putInt(flowBytes[i][j][2]);
+                }
+            }
+            outFile.write(bb.array());
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
     }
 
     public OpticalFlowDemo(Size videoDimensions, final int fps) {
@@ -141,8 +174,14 @@ public class OpticalFlowDemo extends JFrame {
             System.out.print("Proper argument useage: [cam|vid] [camera ID | video path] [fps]");
             System.exit(1);
         }
-        if(args[0].equals("cam")) vc = new VideoCapture(Integer.parseInt(args[1]));
-        else if(args[0].equals("vid")) vc = new VideoCapture(args[1]);
+        if(args[0].equals("cam")) {
+            vc = new VideoCapture(Integer.parseInt(args[1]));
+            filename = new File(args[1]).getName();
+        }
+        else if(args[0].equals("vid")) {
+            vc = new VideoCapture(args[1]);
+            filename = String.valueOf(args[1]);
+        }
         else {
             System.out.print("Proper argument useage: [cam|vid] [camera ID | video path] [fps]");
             System.exit(1);
@@ -173,5 +212,15 @@ public class OpticalFlowDemo extends JFrame {
         } finally {
             executor.shutdown();
         }
+    }
+
+    public enum FrameHeaders{
+        SKIP((byte)0),
+        ONLY_APPLY_MOVEMENTS((byte)1),
+        APPLY_MOVEMENT_TRANSLATE_MOVEMENT((byte)2);
+
+        private final byte header;
+        FrameHeaders(byte header) { this.header = header; }
+        public byte getHeader() { return header; }
     }
 }

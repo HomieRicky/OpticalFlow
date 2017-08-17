@@ -28,6 +28,7 @@ public class OpticalFlowDemo extends JFrame {
     static long time = System.currentTimeMillis();
     static String filename = new String();
     static FileOutputStream fw;
+    static ByteBuffer bb;
 
 
     public static void main(String args[]) throws FileNotFoundException {
@@ -41,7 +42,13 @@ public class OpticalFlowDemo extends JFrame {
         Mat flowDisplay;
         VideoWriter vw = new VideoWriter();
         int count = 1;
+        int repeatLevel = 0;
+        FrameHeaders lastInst = FrameHeaders.SKIP;
+        FrameHeaders instruction;
         fw = new FileOutputStream(filename);
+        OpticalFlowDemo window = null;
+
+        ArrayList<FrameHeaders> instructionSet = generateInstructionSet();
 
         while(vc.isOpened()) {
             vc.read(frame);
@@ -49,10 +56,11 @@ public class OpticalFlowDemo extends JFrame {
                 if(first) {
                     frameToUse = frame;
                     editedFrameToUse = frame;
-                    OpticalFlowDemo window = new OpticalFlowDemo(frame.size(), FPS);
+                    window = new OpticalFlowDemo(frame.size(), FPS);
                     Imgproc.cvtColor(frame, frame, Imgproc.COLOR_BGR2GRAY);
                     frame.convertTo(oldMat, CvType.CV_8UC1);
                     vw = new VideoWriter("outvid.mp4", VideoWriter.fourcc('X','2','6','4'), FPS, frame.size());
+                    bb = ByteBuffer.allocate((frame.cols()/WINDOW_SIZE) * (frame.rows()/WINDOW_SIZE) * 6);
                     first = false;
                 } else {
                     m = frame.clone();
@@ -63,7 +71,19 @@ public class OpticalFlowDemo extends JFrame {
                     //get conversions
                     int flowBytes[][][] = new int[m.rows()/WINDOW_SIZE][m.cols()/WINDOW_SIZE][3];
                     calcOpticalFlow(m, oldMat, m.cols()/WINDOW_SIZE, m.rows()/WINDOW_SIZE, flowBytes);
-                    writeData(FrameHeaders.ONLY_APPLY_MOVEMENTS, flowBytes, fw, 0);
+
+                    if(instructionSet.isEmpty()) instruction = FrameHeaders.SKIP;
+                    else {
+                        instruction = instructionSet.get(0);
+                        instructionSet.remove(0);
+                        if (instruction == lastInst) repeatLevel++;
+                        else {
+                            repeatLevel = 0;
+                            lastInst = instruction;
+                        }
+                    }
+
+                    writeData(instruction, flowBytes, fw, repeatLevel);
 
                     oldMat = m.clone();
 
@@ -89,19 +109,21 @@ public class OpticalFlowDemo extends JFrame {
                 } catch (IOException e) {
                     e.printStackTrace();
                 }
-                break;
+                vc.release();
+                System.out.print("Finished " + count + " frames");
+                window.dispose();
+                return;
             }
         }
-        vc.release();
     }
 
     public static void writeData(FrameHeaders header, int[][][] flowBytes, FileOutputStream outFile, int translationFrames) {
         try {
-            outFile.write(new byte[]{header.getHeader()});
+            outFile.write(new byte[]{header.getHeaderByte()});
             if(header == FrameHeaders.SKIP) return;
             int allocation = flowBytes.length * flowBytes[0].length * 6; //main data part
             allocation += 8; //width and height header
-            if(header == FrameHeaders.APPLY_MOVEMENT_TRANSLATE_MOVEMENT) allocation += 2;   //translation header
+            if(header == FrameHeaders.APPLY_MOVEMENT_TRANSLATE_MOVEMENT) allocation += 4;   //translation header
             ByteBuffer bb = ByteBuffer.allocate(allocation);
             if(header == FrameHeaders.APPLY_MOVEMENT_TRANSLATE_MOVEMENT) bb.putInt(translationFrames);
             bb.putInt(flowBytes.length).putInt(flowBytes[0].length);
@@ -144,8 +166,12 @@ public class OpticalFlowDemo extends JFrame {
                 while (true) {
                     if (isVideoPlaying && System.currentTimeMillis() - time > (1000 / fps)) {
                         time = System.currentTimeMillis();
-                        vidLabel.setIcon(new ImageIcon(matToBufferedImage(frameToUse)));
-                        editLabel.setIcon(new ImageIcon(matToBufferedImage(editedFrameToUse)));
+                        try {
+                            vidLabel.setIcon(new ImageIcon(matToBufferedImage(frameToUse)));
+                            editLabel.setIcon(new ImageIcon(matToBufferedImage(editedFrameToUse)));
+                        } catch (IllegalArgumentException e) {
+                            return;
+                        }
                     }
                 }
             }
@@ -154,7 +180,7 @@ public class OpticalFlowDemo extends JFrame {
         setVisible(true);
     }
 
-    public static BufferedImage matToBufferedImage(Mat frame) {
+    public static BufferedImage matToBufferedImage(Mat frame) throws IllegalArgumentException {
         //Mat() to BufferedImage
         int type = 0;
         if (frame.channels() == 1) {
@@ -215,13 +241,33 @@ public class OpticalFlowDemo extends JFrame {
         }
     }
 
-    public enum FrameHeaders{
-        SKIP((byte)0),
-        ONLY_APPLY_MOVEMENTS((byte)1),
-        APPLY_MOVEMENT_TRANSLATE_MOVEMENT((byte)2);
-
-        private final byte header;
-        FrameHeaders(byte header) { this.header = header; }
-        public byte getHeader() { return header; }
+    public static ArrayList<FrameHeaders> generateInstructionSet() {
+        ArrayList<FrameHeaders> instructions = new ArrayList<>();
+        BufferedReader br = new BufferedReader(new InputStreamReader(System.in));
+        String s;
+        int repeat;
+        byte action;
+        boolean done = false;
+        while(!done) {
+            try {
+                System.out.println("State action: 0 = nothing, 1 = apply movements, 2 = apply move/translate, \"done\" = finish");
+                s = br.readLine();
+                if(s.equals("done")) {
+                    done = true;
+                    break;
+                } else if(Integer.parseInt(s) < 0 || Integer.parseInt(s) > 2) {
+                    System.out.println("bad instruction");
+                } else {
+                    action = Byte.parseByte(s);
+                    System.out.print("Repeat amount: ");
+                    s = br.readLine();
+                    repeat = Integer.parseInt(s);
+                    for (int i = 0; i < repeat; i++) instructions.add(FrameHeaders.getHeader(action));
+                }
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }
+        return instructions;
     }
 }
